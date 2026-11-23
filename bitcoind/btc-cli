@@ -1,0 +1,4 @@
+#!/bin/sh
+# bitcoin-cli preconfigured for this container: it reads the chain and rpcport from the
+# generated config and authenticates with the cookie file, so no password is needed.
+exec bitcoin-cli -datadir=/data -conf=/etc/bitcoin/bitcoin.conf "$@"

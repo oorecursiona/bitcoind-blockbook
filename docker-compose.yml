@@ -1,0 +1,90 @@
+# bitcoind + Blockbook for one Bitcoin network.
+#
+# Settings live in .env (create it with `scripts/btc.sh init <network>`). To run two
+# networks on one host, use two checkouts (or two --env-file files) with different
+# COMPOSE_PROJECT_NAME, DATA_DIR and host ports.
+
+services:
+  bitcoind:
+    image: rgbpp/bitcoind:${BITCOIN_VERSION:-31.1}
+    build:
+      context: ./bitcoind
+      args:
+        BITCOIN_VERSION: ${BITCOIN_VERSION:-31.1}
+    environment:
+      NETWORK: ${NETWORK:-testnet4}
+      RPC_USER: ${RPC_USER:-rpc}
+      RPC_PASSWORD: ${RPC_PASSWORD:?run scripts/btc.sh init first}
+      BITCOIND_DBCACHE: ${BITCOIND_DBCACHE:-2000}
+      BITCOIND_MAXMEMPOOL: ${BITCOIND_MAXMEMPOOL:-1000}
+      BITCOIND_P2P_PORT: ${BITCOIND_P2P_PORT:-48333}
+      BITCOIND_EXTRA_ARGS: ${BITCOIND_EXTRA_ARGS:-}
+    volumes:
+      - ${DATA_DIR:-./data}/bitcoind:/data
+    ports:
+      # P2P is published on all interfaces so the node can serve peers; set
+      # P2P_BIND=127.0.0.1 (or drop it) to stay outbound-only.
+      - "${P2P_BIND:-0.0.0.0}:${BITCOIND_P2P_PORT:-48333}:${BITCOIND_P2P_PORT:-48333}"
+      # RPC and ZMQ stay on loopback; other containers reach them over the compose network.
+      - "127.0.0.1:${BITCOIND_RPC_PORT:-18029}:8332"
+      - "127.0.0.1:${BITCOIND_ZMQ_PORT:-48329}:28332"
+    healthcheck:
+      test: ["CMD", "btc-cli", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Loading the block index after a restart can take minutes on mainnet.
+      start_period: 15m
+    # bitcoind flushes its UTXO cache on shutdown; killing it early forces a long
+    # reindex-like replay on the next start.
+    stop_grace_period: 10m
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+  blockbook:
+    image: rgbpp/blockbook:${IMAGE_TAG:-latest}
+    build:
+      context: ./blockbook
+      # The fork's source tree; the Dockerfile copies it via `COPY --from=src`.
+      additional_contexts:
+        src: ${BLOCKBOOK_SRC:-../blockbook}
+      args:
+        BLOCKBOOK_VERSION: ${BLOCKBOOK_VERSION:-devel}
+        GIT_COMMIT: ${BLOCKBOOK_GIT_COMMIT:-unknown}
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      NETWORK: ${NETWORK:-testnet4}
+      RPC_USER: ${RPC_USER:-rpc}
+      RPC_PASSWORD: ${RPC_PASSWORD:?run scripts/btc.sh init first}
+      BITCOIND_HOST: bitcoind
+      BLOCKBOOK_WORKERS: ${BLOCKBOOK_WORKERS:-8}
+      BLOCKBOOK_DBCACHE: ${BLOCKBOOK_DBCACHE:-1073741824}
+      BLOCKBOOK_EXTERNAL_APIS: ${BLOCKBOOK_EXTERNAL_APIS:-1}
+      BLOCKBOOK_EXTRA_ARGS: ${BLOCKBOOK_EXTRA_ARGS:-}
+      # Enables /admin on the internal port; leave empty to keep it disabled.
+      BB_ADMIN_USER: ${BB_ADMIN_USER:-}
+      BB_ADMIN_PASSWORD: ${BB_ADMIN_PASSWORD:-}
+    volumes:
+      - ${DATA_DIR:-./data}/blockbook:/data
+    ports:
+      # Bound to loopback; put a reverse proxy with TLS in front for outside access.
+      - "${BLOCKBOOK_BIND:-127.0.0.1}:${BLOCKBOOK_PUBLIC_PORT:-19129}:9130"
+      - "127.0.0.1:${BLOCKBOOK_INTERNAL_PORT:-19029}:9030"
+    ulimits:
+      nofile: { soft: 500000, hard: 500000 }
+    healthcheck:
+      # The internal server is up during initial sync; the public one is too, but its
+      # API answers with errors until the index catches up.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9030/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5m
+    # RocksDB must close cleanly; an interrupted bulk import means a full resync.
+    stop_grace_period: 5m
+    restart: unless-stopped
+    logging: *logging
