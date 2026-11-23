@@ -64,15 +64,22 @@ scripts/btc.sh         运维脚本
 | 用途 | EC2 实例 | 规格 | 存储（EBS） | 说明 |
 |---|---|---|---|---|
 | **推荐** | **m7i.xlarge** | 4 vCPU / 16 GiB，x86_64 | **gp3 500 GiB** | 稳定性能，镜像直接构建，最省心 |
-| 推荐（更省钱） | m7g.xlarge | 4 vCPU / 16 GiB，Graviton3 arm64 | gp3 500 GiB | 同规格价格更低；镜像需在 arm64 上构建（本仓库 Dockerfile 已支持 arm64） |
+| 推荐（更省钱） | m7g.xlarge | 4 vCPU / 16 GiB，Graviton3 arm64 | gp3 500 GiB | 同规格通常便宜约 15–20%；4 个 vCPU 都是物理核（m7i 是 2 核超线程）。Blockbook 上游主要在 x86 上运行，arm64 上的生产案例较少 |
 | 最低 | t3.large / t4g.large | 2 vCPU / 8 GiB，突发型 | gp3 300 GiB | 初始同步会持续吃满 CPU，突发积分很快耗尽；必须开 *Unlimited* 模式，或同步期间先用大机型、同步完再降配 |
+
+m7i 与 m7g 的性能差别不大：同步速度主要受 gp3 的 IOPS 和吞吐限制。直接在服务器上执行 `scripts/btc.sh build`
+时两者的操作完全一样，Dockerfile 会按架构下载对应的 bitcoind 发布包。只有在别处构建好镜像再推到服务器时才要注意架构：
+Apple Silicon Mac 构建出的是 arm64 镜像，可以直接用在 m7g 上；给 m7i 用需要 `--platform linux/amd64`
+交叉构建，靠模拟执行，编译 RocksDB 会非常慢。
 
 EBS 建议：
 
 - 用 **gp3**，不要用 gp2 / st1 / sc1（HDD 类型同步会极慢）。
 - gp3 基线为 3000 IOPS / 125 MiB/s。**初始同步期间可临时调到 6000 IOPS / 250 MiB/s**，同步完成后再调回基线
   （EBS 支持在线修改，同一卷两次修改间隔至少 6 小时）。
-- 数据盘单独挂载（例如 `/data`），`DATA_DIR=/data/btc-testnet4`；系统盘 30 GiB 即可。
+- 两种磁盘布局都可以（见“部署步骤 → 准备服务器”）：
+  - **单盘**：根卷直接设为 gp3 500 GiB，最简单。
+  - **系统盘 + 数据盘**：系统盘 30 GiB，另挂一块 gp3 500 GiB 到 `/data`。链数据与系统互不影响，可以单独扩容、快照、换机挂载。
 - 开启 EBS 快照（Data Lifecycle Manager 每日快照），可以用快照快速复制出新节点，省去数天重新同步。
 
 安全组：
@@ -104,13 +111,50 @@ mainnet 的 bitcoind 数据（含 txindex）已接近 1 TB，Blockbook 索引同
 # Ubuntu / Debian：安装 Docker Engine 与 Compose 插件
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"   # 重新登录后生效
-
-# 挂载数据盘（以 AWS NVMe 设备为例，先用 lsblk 确认设备名）
-sudo mkfs.ext4 /dev/nvme1n1
-sudo mkdir -p /data
-echo '/dev/nvme1n1 /data ext4 defaults,noatime 0 2' | sudo tee -a /etc/fstab
-sudo mount -a
 ```
+
+然后按磁盘布局二选一。
+
+**A. 只有一块盘（系统盘）**：不需要格式化或挂载，**不要执行下面 B 里的 `mkfs`**——
+在单盘机器上改成系统盘的设备名执行，会把正在运行的系统盘清空。只需建目录：
+
+```bash
+df -h /                          # 确认根分区可用空间够（testnet4 建议 ≥ 300–500 GB 可用）
+sudo mkdir -p /data/btc-testnet4
+```
+
+单盘要注意：
+
+- 根分区写满时，不只 bitcoind / Blockbook 会挂，SSH、日志、系统更新也可能出问题。定期看 `df -h /`，
+  用量到 80% 左右就扩容。
+- 云厂商后台把盘调大后，还要在系统内扩展分区和文件系统，例如 Ubuntu + ext4：
+  `sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1`（设备名以 `lsblk` 为准）。
+- EBS 快照会把系统和链数据一起打包，恢复时是整机恢复。
+
+**B. 单独的数据盘**：格式化后挂载到 `/data`。
+
+```bash
+lsblk                            # 找到新数据盘：大小对得上、没有分区、没有挂载点的那块
+```
+
+```bash
+sudo mkfs.ext4 /dev/nvme1n1      # 会清空这块盘；设备名以 lsblk 为准
+```
+
+```bash
+UUID=$(sudo blkid -s UUID -o value /dev/nvme1n1)
+sudo mkdir -p /data
+echo "UUID=$UUID /data ext4 defaults,noatime,nofail 0 2" | sudo tee -a /etc/fstab
+sudo mount -a && df -h /data
+sudo mkdir -p /data/btc-testnet4
+```
+
+- fstab 用 **UUID** 而不是 `/dev/nvme1n1`：Nitro 实例上 NVMe 设备编号按识别顺序分配，重启或增减卷后可能对调。
+- **`nofail`**：数据盘缺失或挂载失败时系统照常启动，否则会卡在紧急模式，SSH 也连不上。
+- `noatime`：读文件时不更新访问时间，减少 bitcoind / RocksDB 的无效写入。
+- `mount -a` 不报错，说明 fstab 这一行正确，重启后也能自动挂载。
+
+两种布局后续步骤相同：`DATA_DIR=/data/btc-testnet4`，容器启动时会自动修正目录所有者，无需手动 `chown`。
 
 需要 Docker Compose ≥ 2.17（用到 `build.additional_contexts`），`docker compose version` 确认。
 
