@@ -6,17 +6,18 @@
 
 services:
   bitcoind:
-    image: rgbpp/bitcoind:${BITCOIN_VERSION:-29.2}
+    image: rgbpp/bitcoind:${BITCOIN_VERSION:-31.1}
     build:
       context: ./bitcoind
       args:
-        BITCOIN_VERSION: ${BITCOIN_VERSION:-29.2}
+        BITCOIN_VERSION: ${BITCOIN_VERSION:-31.1}
     environment:
       NETWORK: ${NETWORK:-testnet4}
       RPC_USER: ${RPC_USER:-rpc}
       RPC_PASSWORD: ${RPC_PASSWORD:?run scripts/btc.sh init first}
       BITCOIND_DBCACHE: ${BITCOIND_DBCACHE:-2000}
-      BITCOIND_MAXMEMPOOL: ${BITCOIND_MAXMEMPOOL:-1000}
+      BITCOIND_MAXMEMPOOL: ${BITCOIND_MAXMEMPOOL:-2000}
+      BITCOIND_TXOSPENDERINDEX: ${BITCOIND_TXOSPENDERINDEX:-1}
       BITCOIND_P2P_PORT: ${BITCOIND_P2P_PORT:-48333}
       BITCOIND_EXTRA_ARGS: ${BITCOIND_EXTRA_ARGS:-}
     volumes:

@@ -1,12 +1,13 @@
 # Bitcoin Core from the official release tarball, checksum-verified.
 #
-# The default is the version Blockbook's release pins in configs/coins/bitcoin*.json
-# (v0.6.0 -> 29.2), i.e. the combination upstream tests. To use another version, add
-# its checksums to the table below (from that Blockbook release's coin config, or
-# SHA256SUMS on bitcoincore.org) and set BITCOIN_VERSION in .env.
+# Default 31.1, the version upstream Blockbook moved to after v0.6.0 (v0.6.0 itself pins
+# 29.2, which reached end of life in October 2026). 31.x is also the first release with
+# -txospenderindex. To use another version, add its checksums to the table below (from
+# Blockbook's configs/coins/bitcoin*.json or SHA256SUMS on bitcoincore.org) and set
+# BITCOIN_VERSION in .env.
 FROM debian:bookworm-slim
 
-ARG BITCOIN_VERSION=29.2
+ARG BITCOIN_VERSION=31.1
 ARG TARGETARCH
 
 RUN apt-get update \

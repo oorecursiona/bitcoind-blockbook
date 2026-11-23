@@ -66,14 +66,14 @@ USAGE
 # several networks side by side without collisions.
 cmd_init() {
   local net="${1:-}"
-  local public internal rpc zmq p2p dbcache extra=""
+  local public internal rpc zmq p2p dbcache mempool extra=""
   case "$net" in
-    mainnet)  public=9130  internal=9030  rpc=8030  zmq=38330 p2p=8333  dbcache=4000 ;;
-    testnet)  public=19130 internal=19030 rpc=18030 zmq=48330 p2p=18333 dbcache=2000 ;;
-    testnet4) public=19129 internal=19029 rpc=18029 zmq=48329 p2p=48333 dbcache=2000 ;;
+    mainnet)  public=9130  internal=9030  rpc=8030  zmq=38330 p2p=8333  dbcache=4000 mempool=4096 ;;
+    testnet)  public=19130 internal=19030 rpc=18030 zmq=48330 p2p=18333 dbcache=2000 mempool=2000 ;;
+    testnet4) public=19129 internal=19029 rpc=18029 zmq=48329 p2p=48333 dbcache=2000 mempool=2000 ;;
     # Blockbook's signet config omits -extendedindex, which the RGB++ indexer needs to
     # resolve spenders; the other networks' configs already set it.
-    signet)   public=19120 internal=19020 rpc=18020 zmq=48320 p2p=38333 dbcache=1000 extra="-extendedindex" ;;
+    signet)   public=19120 internal=19020 rpc=18020 zmq=48320 p2p=38333 dbcache=1000 mempool=1000 extra="-extendedindex" ;;
     *) die "usage: scripts/btc.sh init mainnet|testnet|testnet4|signet" ;;
   esac
   if [[ -f .env ]]; then
@@ -86,6 +86,7 @@ cmd_init() {
     -e "s|^NETWORK=.*|NETWORK=${net}|" \
     -e "s|^RPC_PASSWORD=.*|RPC_PASSWORD=${password}|" \
     -e "s|^BITCOIND_DBCACHE=.*|BITCOIND_DBCACHE=${dbcache}|" \
+    -e "s|^BITCOIND_MAXMEMPOOL=.*|BITCOIND_MAXMEMPOOL=${mempool}|" \
     -e "s|^BITCOIND_P2P_PORT=.*|BITCOIND_P2P_PORT=${p2p}|" \
     -e "s|^BITCOIND_RPC_PORT=.*|BITCOIND_RPC_PORT=${rpc}|" \
     -e "s|^BITCOIND_ZMQ_PORT=.*|BITCOIND_ZMQ_PORT=${zmq}|" \

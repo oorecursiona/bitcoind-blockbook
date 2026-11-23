@@ -13,7 +13,7 @@
   包装脚本，运维方式统一。
 - **可复现**。Blockbook 依赖 RocksDB 9.10（静态链接）、ZeroMQ、特定 Go 版本，
   手工在服务器上编译容易出偏差；镜像里一次编好，换机器直接跑。bitcoind 用官方发布包并校验 sha256，
-  版本与 Blockbook release 的 `configs/coins/bitcoin*.json` 保持一致（v0.6.0 对应 Bitcoin Core 29.2）。
+  默认 Bitcoin Core 31.1（见下文“bitcoind 配置”）。
 - **多网络共存**。每个网络一个 Compose project、一套端口（沿用 Blockbook 端口登记表），互不干扰。
 
 代价与注意点：
@@ -50,10 +50,10 @@ scripts/btc.sh         运维脚本
 | 带宽 | 50 Mbps | 100 Mbps 以上，流量不限或 ≥2 TB/月 |
 | 系统 | Ubuntu 22.04 / 24.04 或 Debian 12，x86_64 或 arm64 |
 
-容量说明：testnet4 自 2024 年启动后被大量刷交易，区块数据增长比预期快；bitcoind（含 `txindex`）
-和 Blockbook 索引（含 `-extendedindex`）的体积大致在同一量级，两者合计目前在一两百 GB 范围内并持续增长。
-**500 GB 是为 1~2 年增长留出的余量**；部署后用 `scripts/btc.sh status` 里的 `size_on_disk`、
-`dbSize` 实测，按增长速度规划扩容。
+容量说明：testnet4 自 2024 年启动后被大量刷交易，区块数据增长比预期快；bitcoind（含 `txindex`、
+`txospenderindex`）和 Blockbook 索引（含 `-extendedindex`）的体积大致在同一量级，两者合计目前在一两百 GB
+范围内并持续增长。**500 GB 是为 1~2 年增长留出的余量**；部署后用 `du -sh $DATA_DIR/*` 实测
+（`status` 里的 `size_on_disk` 只算区块文件，不含索引），按增长速度规划扩容。
 
 内存说明：16 GB 时，bitcoind `dbcache=2000`（MiB）、Blockbook RocksDB 缓存 1 GiB，加上 Blockbook
 初始同步时的工作内存和 mempool，留有充足余量。8 GB 机器建议把 `BITCOIND_DBCACHE` 降到 1000、
@@ -230,6 +230,36 @@ curl -s http://127.0.0.1:19129/api/v2/block-index/0
 
 浏览器访问 `http://127.0.0.1:19129/` 是 Blockbook 自带的区块浏览器（远程机器用 `ssh -L 19129:127.0.0.1:19129` 转发）。
 
+## bitcoind 配置
+
+`bitcoind/entrypoint.sh` 每次启动时按 `.env` 生成 `bitcoin.conf`，以 Blockbook 官方模板
+（`build/templates/backend/config/bitcoin*.conf`）为基础：
+
+| 配置 | 作用 |
+|---|---|
+| `server=1` | 开启 RPC |
+| `txindex=1` | 全量交易索引，Blockbook 按 txid 查任意交易依赖它 |
+| `txospenderindex=1` | 输出花费索引（Core 31+）：`gettxspendingprevout` 能查已确认交易的花费者，不只是 mempool。`BITCOIND_TXOSPENDERINDEX=0` 可关闭 |
+| `disablewallet=1` | 不加载钱包 |
+| `zmqpubhashtx` / `zmqpubhashblock` | 新交易、新区块推送给 Blockbook（Blockbook 只订阅这两个） |
+| `rpcworkqueue=1100`、`rpcthreads=16` | Blockbook 同步时并发 RPC 很多 |
+| `maxmempool` | `init` 按网络设：mainnet 4096、testnet / testnet4 2000、signet 1000（MB）。满了会踢掉最低费率交易，Blockbook 就看不到它们 |
+| `mempoolexpiry=8760` | 内存池交易保留更久，与官方一致 |
+| `deprecatedrpc=warnings` | **必需**。Core 25+ 的 `warnings` 字段是数组，Blockbook v0.6.0 只认字符串，不加会导致 `getblockchaininfo` 解析失败；v0.6.0 之后的 Blockbook 两种都认 |
+| `rpcauth` / `rpcbind` / `rpcallowip` | RPC 认证与访问控制；RPC 只在 Compose 网络和宿主机 127.0.0.1 上可达 |
+| 不设 `prune` | Blockbook 需要完整区块；`txospenderindex` 也与裁剪模式不兼容 |
+
+关于版本：Blockbook v0.6.0 的配置固定的是 Core 29.2，但 29.x 已于 2026 年 10 月停止维护，上游在 v0.6.0
+之后升级到 31.1，并确认 Blockbook 用到的 RPC 没有不兼容变化。`txospenderindex` 也只在 31.0 起才有，所以默认用 31.1。
+若把 `BITCOIN_VERSION` 改回 29.2，entrypoint 会自动跳过 `txospenderindex` 并打印警告。
+
+关于 `txospenderindex`：
+
+- 在已同步的节点上新开启时，bitcoind 会在后台从头构建该索引，期间 `gettxspendingprevout` 查不全已确认的花费，
+  可用 `scripts/btc.sh cli getindexinfo` 查看进度（`synced: true` 即完成）。
+- 会额外占用磁盘，量级与 `txindex` 相当，规划磁盘时一并算上。
+- Blockbook 本身不使用它；它给直接调用 bitcoind RPC 的组件用。RPC 默认只绑 127.0.0.1，其它机器要用需另行开放（注意安全）。
+
 ## 接入 RGB++ indexer / gateway
 
 在 indexer 的配置（`rgbpp-indexer/config/*.toml`）中：
@@ -276,7 +306,8 @@ base_url = "http://<blockbook 主机>:19129"
   以及新版本 `configs/coins/bitcoin*.json` 里的 Bitcoin Core 版本——两者一起升级。
 - **bitcoind**：在 `bitcoind/Dockerfile` 的校验表里加上新版本 x86_64 / aarch64 两个 sha256（取自对应
   Blockbook release 的 `configs/coins/bitcoin*.json`，或 bitcoincore.org 的 `SHA256SUMS`），改 `.env` 的
-  `BITCOIN_VERSION`，再 `build bitcoind && up`。已内置 29.2 和 31.1。降级大版本前先确认数据目录兼容。
+  `BITCOIN_VERSION`，再 `build bitcoind && up`。已内置 31.1 和 29.2。
+  **不要在已有数据上降级大版本**（例如 31 → 29）：新版本写过的数据目录旧版本未必能打开，降级通常要重新同步。
 
 ### 备份
 

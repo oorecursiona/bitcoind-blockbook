@@ -9,7 +9,8 @@ set -eu
 : "${RPC_PASSWORD:?RPC_PASSWORD must be set (scripts/btc.sh init generates one)}"
 : "${RPC_ALLOW_IP:=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
 : "${BITCOIND_DBCACHE:=2000}"
-: "${BITCOIND_MAXMEMPOOL:=1000}"
+: "${BITCOIND_MAXMEMPOOL:=2000}"
+: "${BITCOIND_TXOSPENDERINDEX:=1}"
 : "${BITCOIND_MAXCONNECTIONS:=40}"
 
 case "$NETWORK" in
@@ -19,6 +20,18 @@ case "$NETWORK" in
   signet)   chain_line="signet=1";   section="signet" ;;
   *) echo "unknown NETWORK=$NETWORK (mainnet|testnet|testnet4|signet)" >&2; exit 1 ;;
 esac
+
+# txospenderindex (outpoint -> spending tx, served by `gettxspendingprevout`) only
+# exists from Bitcoin Core 31.0; an older bitcoind refuses to start on unknown options.
+spender_index=""
+if [ "$BITCOIND_TXOSPENDERINDEX" = "1" ]; then
+  major=$(bitcoind -version | sed -n '1s/.* v\([0-9][0-9]*\)\..*/\1/p')
+  if [ "${major:-0}" -ge 31 ]; then
+    spender_index="txospenderindex=1"
+  else
+    echo "warning: bitcoind v${major:-?} has no -txospenderindex (needs 31.0+); not enabling it" >&2
+  fi
+fi
 
 # rpcauth keeps the plaintext password out of the config file. Same algorithm as
 # Bitcoin Core's share/rpcauth/rpcauth.py: HMAC-SHA256(key=salt, msg=password).
@@ -32,6 +45,7 @@ conf=/etc/bitcoin/bitcoin.conf
   cat <<EOF
 server=1
 txindex=1
+${spender_index}
 disablewallet=1
 printtoconsole=1
 dbcache=${BITCOIND_DBCACHE}
@@ -42,6 +56,9 @@ rpcworkqueue=1100
 rpcthreads=16
 # Blockbook tracks mempool transactions for a long time; match its expectations.
 mempoolexpiry=8760
+# Core 25+ returns "warnings" as an array; Blockbook v0.6.0 decodes only the old string
+# form and fails on getblockchaininfo without this. Newer Blockbook accepts both.
+deprecatedrpc=warnings
 zmqpubhashtx=tcp://0.0.0.0:28332
 zmqpubhashblock=tcp://0.0.0.0:28332
 
