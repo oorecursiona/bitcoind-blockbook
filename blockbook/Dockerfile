@@ -1,8 +1,10 @@
-# Blockbook built from the local fork checkout (build context `src`, see docker-compose.yml).
+# Blockbook built from source. The source is the build context `src` (BLOCKBOOK_SRC in
+# docker-compose.yml): by default the official trezor/blockbook release tag fetched
+# straight from GitHub, or a local checkout for development.
 #
-# Mirrors the fork's own build (build/docker/bin): RocksDB v9.10.0 linked statically,
-# jemalloc linked statically, ZeroMQ dynamically. RocksDB is built PORTABLE so the image
-# runs on any x86-64/arm64 host, not only the one that built it.
+# Mirrors upstream's own build (build/docker/bin): RocksDB v9.10.0 and Go 1.25 as pinned
+# by v0.6.0, RocksDB linked statically, ZeroMQ dynamically. RocksDB is built PORTABLE so
+# the image runs on any x86-64/arm64 host, not only the one that built it.
 
 ############################ builder ############################
 FROM golang:1.25.4-bookworm AS builder
@@ -33,14 +35,18 @@ COPY --from=src . .
 
 ARG BLOCKBOOK_VERSION=devel
 ARG GIT_COMMIT=unknown
+# 1 links jemalloc statically, as upstream's own build does after v0.6.0 (master and the
+# oorecursiona fork); v0.6.0 itself builds against glibc malloc, so the default is 0.
+ARG JEMALLOC=0
 RUN set -eux; \
-    export CGO_LDFLAGS="-L/opt/rocksdb -ldl -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd $(gcc -print-file-name=libjemalloc_pic.a)"; \
+    export CGO_LDFLAGS="-L/opt/rocksdb -ldl -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"; \
+    if [ "$JEMALLOC" != "0" ]; then CGO_LDFLAGS="$CGO_LDFLAGS $(gcc -print-file-name=libjemalloc_pic.a)"; fi; \
     go build -o /out/blockbook -ldflags="-s -w \
       -X github.com/trezor/blockbook/common.version=${BLOCKBOOK_VERSION} \
       -X github.com/trezor/blockbook/common.gitcommit=${GIT_COMMIT} \
       -X github.com/trezor/blockbook/common.buildtime=$(date --iso-8601=seconds)" .
 
-# Render blockchaincfg.json for each Bitcoin network from the fork's own templates, so
+# Render blockchaincfg.json for each Bitcoin network from Blockbook's own templates, so
 # the runtime config is exactly what the .deb packages would install. The entrypoint
 # only rewrites the RPC/ZMQ endpoints and credentials.
 # BB_BUILD_ENV=prod: the generator defaults to "dev", which merges additional_params_dev.
@@ -70,7 +76,7 @@ COPY --from=builder /out/config ./config
 COPY --from=builder /src/static ./static
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Same allocator tuning the fork's systemd unit sets.
+# jemalloc tuning from the fork's systemd unit; ignored when built with JEMALLOC=0.
 ENV MALLOC_CONF=narenas:8,background_thread:true
 
 VOLUME /data

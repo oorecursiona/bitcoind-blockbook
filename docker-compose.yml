@@ -6,11 +6,11 @@
 
 services:
   bitcoind:
-    image: rgbpp/bitcoind:${BITCOIN_VERSION:-31.1}
+    image: rgbpp/bitcoind:${BITCOIN_VERSION:-29.2}
     build:
       context: ./bitcoind
       args:
-        BITCOIN_VERSION: ${BITCOIN_VERSION:-31.1}
+        BITCOIN_VERSION: ${BITCOIN_VERSION:-29.2}
     environment:
       NETWORK: ${NETWORK:-testnet4}
       RPC_USER: ${RPC_USER:-rpc}
@@ -47,12 +47,15 @@ services:
     image: rgbpp/blockbook:${IMAGE_TAG:-latest}
     build:
       context: ./blockbook
-      # The fork's source tree; the Dockerfile copies it via `COPY --from=src`.
+      # Blockbook source: a git URL (`repo.git#tag`, fetched by BuildKit) or a local
+      # directory. The Dockerfile copies it via `COPY --from=src`.
       additional_contexts:
-        src: ${BLOCKBOOK_SRC:-../blockbook}
+        src: ${BLOCKBOOK_SRC:-https://github.com/trezor/blockbook.git#v0.6.0}
       args:
+        # scripts/btc.sh build derives these from BLOCKBOOK_SRC; they only label the binary.
         BLOCKBOOK_VERSION: ${BLOCKBOOK_VERSION:-devel}
         GIT_COMMIT: ${BLOCKBOOK_GIT_COMMIT:-unknown}
+        JEMALLOC: ${BLOCKBOOK_JEMALLOC:-0}
     depends_on:
       bitcoind:
         condition: service_healthy

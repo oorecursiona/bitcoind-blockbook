@@ -1,7 +1,7 @@
 # bitcoind + Blockbook 部署
 
 为 RGB++ indexer / gateway 自建 Bitcoin 数据源：一个 Bitcoin Core 全节点（`txindex=1`）加一个
-[Blockbook](../blockbook)（本仓库同级目录下的 fork），用 Docker Compose 部署。
+[Blockbook](https://github.com/trezor/blockbook)（默认构建官方最新 release **v0.6.0**），用 Docker Compose 部署。
 
 支持 `mainnet`、`testnet`（testnet3）、`testnet4`、`signet`，一套 `.env` 对应一个网络。
 
@@ -11,9 +11,9 @@
 
 - **和同项目其它服务一致**。`rgbpp-indexer`、`rgbpp-gateway` 都是 Compose + 一个 `scripts/*.sh`
   包装脚本，运维方式统一。
-- **可复现**。Blockbook 依赖 RocksDB 9.10（静态链接）、ZeroMQ、jemalloc、特定 Go 版本，
+- **可复现**。Blockbook 依赖 RocksDB 9.10（静态链接）、ZeroMQ、特定 Go 版本，
   手工在服务器上编译容易出偏差；镜像里一次编好，换机器直接跑。bitcoind 用官方发布包并校验 sha256，
-  版本与 Blockbook fork 的 `configs/coins/bitcoin*.json` 保持一致（31.1）。
+  版本与 Blockbook release 的 `configs/coins/bitcoin*.json` 保持一致（v0.6.0 对应 Bitcoin Core 29.2）。
 - **多网络共存**。每个网络一个 Compose project、一套端口（沿用 Blockbook 端口登记表），互不干扰。
 
 代价与注意点：
@@ -25,8 +25,8 @@
   强杀会导致必须全量重建。Compose 里已设 `stop_grace_period`（10 分钟 / 5 分钟），
   **不要用 `docker kill` 或 `docker compose down -t 0`**。
 
-Blockbook 官方的另一条路是 `make all-bitcoin_testnet4` 打 `.deb` 包 + systemd 运行（见
-`../blockbook/docs/build.md`）。只在需要和上游运维方式完全一致时才考虑。
+Blockbook 官方的另一条路是 `make all-bitcoin_testnet4` 打 `.deb` 包 + systemd 运行（见上游
+[docs/build.md](https://github.com/trezor/blockbook/blob/v0.6.0/docs/build.md)）。只在需要和上游运维方式完全一致时才考虑。
 
 ## 目录结构
 
@@ -34,7 +34,7 @@ Blockbook 官方的另一条路是 `make all-bitcoin_testnet4` 打 `.deb` 包 + 
 docker-compose.yml     两个服务：bitcoind、blockbook
 .env.example           配置模板（scripts/btc.sh init 会生成 .env）
 bitcoind/              官方二进制镜像；entrypoint 按 .env 生成 bitcoin.conf
-blockbook/             从 ../blockbook 源码多阶段构建；entrypoint 生成 blockchaincfg.json
+blockbook/             从 BLOCKBOOK_SRC 源码多阶段构建；entrypoint 生成 blockchaincfg.json
 scripts/btc.sh         运维脚本
 ```
 
@@ -160,13 +160,20 @@ sudo mkdir -p /data/btc-testnet4
 
 ### 2. 获取代码
 
-`blockbook` 源码需要和本仓库放在同级目录（或在 `.env` 里改 `BLOCKBOOK_SRC`）：
+只需要克隆本仓库。Blockbook 源码不用单独下载：构建时 Docker 按 `.env` 里的 `BLOCKBOOK_SRC`
+直接从 GitHub 拉取，默认是官方 release：
 
+```env
+BLOCKBOOK_SRC=https://github.com/trezor/blockbook.git#v0.6.0
 ```
-rgbpp-infra/
-├── bitcoind-blockbook/   ← 本仓库
-└── blockbook/            ← Blockbook fork
-```
+
+`#` 后面可以是 tag、分支或提交哈希。生产环境请固定到 tag 或提交，不要用分支，否则每次构建的代码可能不同。
+
+其它用法：
+
+- **用 v0.6.0 之后的代码**（上游 master 的某个提交，或 `https://github.com/oorecursiona/blockbook.git#<提交>`）：
+  v0.6.0 之后上游开始静态链接 jemalloc（减少 RocksDB 内存碎片），用这些代码时同时设 `BLOCKBOOK_JEMALLOC=1`。
+- **本地开发**：指向本地目录，例如 `BLOCKBOOK_SRC=../blockbook`，构建的是该目录当前的代码（含未提交的改动）。
 
 ### 3. 初始化配置
 
@@ -174,7 +181,7 @@ rgbpp-infra/
 scripts/btc.sh init testnet4
 ```
 
-生成 `.env`（权限 600）：网络、随机 RPC 密码、按 Blockbook 端口表分配的端口、Blockbook 版本号。
+生成 `.env`（权限 600）：网络、随机 RPC 密码、按 Blockbook 端口表分配的端口。
 然后按服务器修改：
 
 ```bash
@@ -191,7 +198,8 @@ sed -i 's|^DATA_DIR=.*|DATA_DIR=/data/btc-testnet4|' .env
 scripts/btc.sh build
 ```
 
-Blockbook 镜像第一次构建需要编译 RocksDB，约 10~30 分钟；之后只改 Blockbook 源码时会复用该层。
+Blockbook 镜像第一次构建需要编译 RocksDB，约 10~30 分钟；之后只换 Blockbook 版本时会复用该层。
+构建时脚本会打印实际使用的源码、版本和提交号，并写进二进制（`/api/` 返回的 `blockbook.version`、`gitCommit`）。
 
 ### 5. 启动
 
@@ -239,7 +247,8 @@ base_url = "http://<blockbook 主机>:19129"
 
 - **网络必须一致**。indexer 现有 `testnet.toml` 用的是 `mempool.space/testnet`（即 testnet3），
   如果 RGB++ 部署在 testnet3 上，这里要用 `init testnet`，而不是 testnet4。
-- **保留 `-extendedindex`**（Bitcoin 各网络的 coin 配置默认开启）。它让 Blockbook 记录每个输出被哪笔交易花费，
+- **保留 `-extendedindex`**（mainnet / testnet / testnet4 的官方配置默认开启；signet 的官方配置没有开，
+  `init signet` 会自动在 `BLOCKBOOK_EXTRA_ARGS` 里加上）。它让 Blockbook 记录每个输出被哪笔交易花费，
   indexer 解析 spender 依赖这一点。这个参数只在首次同步时生效，中途开启需要 `reset-blockbook` 全量重建。
 - 若 indexer 跑在同一台机器的另一个 Compose 项目里，容器内访问宿主机 127.0.0.1 不通，可以设
   `BLOCKBOOK_BIND=0.0.0.0` 并用宿主机私网 IP，或把两个项目接到同一个外部 Docker network。
@@ -261,11 +270,13 @@ base_url = "http://<blockbook 主机>:19129"
 
 ### 升级
 
-- **Blockbook**：更新 `../blockbook` 代码后执行 `scripts/btc.sh build blockbook && scripts/btc.sh up`
-  （不要重跑 `init`，它会重置 RPC 密码；`.env` 里的 `BLOCKBOOK_VERSION`、`BLOCKBOOK_GIT_COMMIT` 只影响版本显示，可手动更新）。
-  留意 fork 的 changelog 是否要求重建索引。
-- **bitcoind**：同时修改 `bitcoind/Dockerfile` 里的 `BITCOIN_VERSION` 和两个 sha256（与 blockbook fork
-  `configs/coins/bitcoin*.json` 保持一致），以及 `.env` 的 `BITCOIN_VERSION`，再 `build bitcoind && up`。
+- **Blockbook**：把 `.env` 里 `BLOCKBOOK_SRC` 的 tag 改成新版本，然后
+  `scripts/btc.sh build blockbook && scripts/btc.sh up`（不要重跑 `init`，它会重置 RPC 密码）。
+  先看上游 [releases](https://github.com/trezor/blockbook/releases) 的说明是否要求重建索引，
+  以及新版本 `configs/coins/bitcoin*.json` 里的 Bitcoin Core 版本——两者一起升级。
+- **bitcoind**：在 `bitcoind/Dockerfile` 的校验表里加上新版本 x86_64 / aarch64 两个 sha256（取自对应
+  Blockbook release 的 `configs/coins/bitcoin*.json`，或 bitcoincore.org 的 `SHA256SUMS`），改 `.env` 的
+  `BITCOIN_VERSION`，再 `build bitcoind && up`。已内置 29.2 和 31.1。降级大版本前先确认数据目录兼容。
 
 ### 备份
 

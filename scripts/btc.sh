@@ -39,7 +39,7 @@ bitcoind + Blockbook — Docker helper
 
   Setup
     init <network>     Write .env for mainnet|testnet|testnet4|signet (random RPC password)
-    build              Build both images (Blockbook from $BLOCKBOOK_SRC, default ../blockbook)
+    build [svc]        Build images; Blockbook from BLOCKBOOK_SRC (git URL#tag or local dir)
 
   Running
     up                 Start bitcoind and Blockbook (Blockbook waits for bitcoind health)
@@ -66,12 +66,14 @@ USAGE
 # several networks side by side without collisions.
 cmd_init() {
   local net="${1:-}"
-  local public internal rpc zmq p2p dbcache
+  local public internal rpc zmq p2p dbcache extra=""
   case "$net" in
     mainnet)  public=9130  internal=9030  rpc=8030  zmq=38330 p2p=8333  dbcache=4000 ;;
     testnet)  public=19130 internal=19030 rpc=18030 zmq=48330 p2p=18333 dbcache=2000 ;;
     testnet4) public=19129 internal=19029 rpc=18029 zmq=48329 p2p=48333 dbcache=2000 ;;
-    signet)   public=19120 internal=19020 rpc=18020 zmq=48320 p2p=38333 dbcache=1000 ;;
+    # Blockbook's signet config omits -extendedindex, which the RGB++ indexer needs to
+    # resolve spenders; the other networks' configs already set it.
+    signet)   public=19120 internal=19020 rpc=18020 zmq=48320 p2p=38333 dbcache=1000 extra="-extendedindex" ;;
     *) die "usage: scripts/btc.sh init mainnet|testnet|testnet4|signet" ;;
   esac
   if [[ -f .env ]]; then
@@ -79,12 +81,6 @@ cmd_init() {
   fi
   local password
   password=$(openssl rand -hex 24)
-  local src_commit="unknown" src_version="devel"
-  local src="../blockbook"
-  if git -C "$src" rev-parse >/dev/null 2>&1; then
-    src_commit=$(git -C "$src" describe --always --dirty)
-    src_version=$(git -C "$src" describe --tags --abbrev=0 2>/dev/null || echo devel)
-  fi
   sed \
     -e "s|^COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=btc-${net}|" \
     -e "s|^NETWORK=.*|NETWORK=${net}|" \
@@ -95,8 +91,7 @@ cmd_init() {
     -e "s|^BITCOIND_ZMQ_PORT=.*|BITCOIND_ZMQ_PORT=${zmq}|" \
     -e "s|^BLOCKBOOK_PUBLIC_PORT=.*|BLOCKBOOK_PUBLIC_PORT=${public}|" \
     -e "s|^BLOCKBOOK_INTERNAL_PORT=.*|BLOCKBOOK_INTERNAL_PORT=${internal}|" \
-    -e "s|^BLOCKBOOK_VERSION=.*|BLOCKBOOK_VERSION=${src_version}|" \
-    -e "s|^BLOCKBOOK_GIT_COMMIT=.*|BLOCKBOOK_GIT_COMMIT=${src_commit}|" \
+    -e "s|^BLOCKBOOK_EXTRA_ARGS=.*|BLOCKBOOK_EXTRA_ARGS=${extra}|" \
     .env.example > .env
   chmod 600 .env
   bold "wrote .env for $net"
@@ -132,13 +127,41 @@ cmd_logs() {
   esac
 }
 
+# Labels the Blockbook binary (shown in /api/) with what BLOCKBOOK_SRC resolves to:
+# for `repo.git#ref` the ref and its commit, for a local checkout `git describe`.
+# Best effort: a failed lookup only leaves the label as "unknown".
+blockbook_build_labels() {
+  local src; src=$(env_get BLOCKBOOK_SRC)
+  src="${src:-https://github.com/trezor/blockbook.git#v0.6.0}"
+  local version="devel" commit="unknown"
+  if [[ "$src" == *://* || "$src" == git@* ]]; then
+    local repo="${src%%#*}" ref="HEAD"
+    [[ "$src" == *#* ]] && ref="${src#*#}"
+    version="$ref"
+    if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then
+      commit="${ref:0:8}"
+    else
+      # An annotated tag lists both the tag object and the peeled commit (^{}); prefer the latter.
+      local refs
+      refs=$(git ls-remote "$repo" "$ref" "$ref^{}" 2>/dev/null || true)
+      commit=$( { grep '\^{}$' <<<"$refs" || head -1 <<<"$refs"; } | cut -c1-8)
+      commit="${commit:-unknown}"
+    fi
+  elif git -C "$src" rev-parse >/dev/null 2>&1; then
+    version=$(git -C "$src" describe --tags --always --dirty)
+    commit=$(git -C "$src" describe --always --dirty)
+  fi
+  export BLOCKBOOK_VERSION="$version" BLOCKBOOK_GIT_COMMIT="$commit"
+  echo "blockbook source: $src (version $version, commit $commit)"
+}
+
 data_dir() { local d; d=$(env_get DATA_DIR); echo "${d:-./data}"; }
 
 main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
     init)        cmd_init "$@" ;;
-    build)       require_docker; require_env; "${COMPOSE[@]}" build "$@" ;;
+    build)       require_docker; require_env; blockbook_build_labels; "${COMPOSE[@]}" build "$@" ;;
     up)          require_docker; require_env
                  mkdir -p "$(data_dir)/bitcoind" "$(data_dir)/blockbook"
                  "${COMPOSE[@]}" up -d "$@" ;;
