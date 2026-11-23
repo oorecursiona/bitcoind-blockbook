@@ -47,6 +47,7 @@ bitcoind + Blockbook — Docker helper
     down               Stop everything; data is kept
     restart [svc]      Restart one service, or both
     ps                 Container status
+    images             Built rgbpp/* images and their tags
 
   Inspecting
     status             Sync progress of bitcoind and Blockbook
@@ -153,13 +154,36 @@ blockbook_build_labels() {
     commit=$(git -C "$src" describe --always --dirty)
   fi
   export BLOCKBOOK_VERSION="$version" BLOCKBOOK_GIT_COMMIT="$commit"
-  echo "blockbook source: $src (version $version, commit $commit)"
+  echo "blockbook source: $src (version $version, commit $commit) -> rgbpp/blockbook:${BLOCKBOOK_IMAGE_TAG}"
+}
+
+# The Blockbook image is tagged with the source it was built from, never `latest`:
+# the ref after `#` for a git URL (rgbpp/blockbook:v0.6.0), `git describe` for a local
+# checkout (rgbpp/blockbook:v0.6.0-243-g9e6f079f-dirty). Computed offline so every
+# command (build, up, ...) resolves the same image. BLOCKBOOK_IMAGE_TAG in .env overrides.
+blockbook_image_tag() {
+  local tag; tag=$(env_get BLOCKBOOK_IMAGE_TAG)
+  if [[ -z "$tag" ]]; then
+    local src; src=$(env_get BLOCKBOOK_SRC)
+    src="${src:-https://github.com/trezor/blockbook.git#v0.6.0}"
+    if [[ "$src" == *://* || "$src" == git@* ]]; then
+      [[ "$src" == *#* ]] && tag="${src#*#}" || tag="HEAD"
+    elif git -C "$src" rev-parse >/dev/null 2>&1; then
+      tag=$(git -C "$src" describe --tags --always --dirty)
+    else
+      tag="local"
+    fi
+  fi
+  # Docker tags allow [A-Za-z0-9_.-], at most 128 chars, not starting with . or -.
+  tag=$(printf '%s' "$tag" | tr -c 'A-Za-z0-9_.-' '-' | sed 's/^[.-]*//' | cut -c1-128)
+  export BLOCKBOOK_IMAGE_TAG="${tag:-local}"
 }
 
 data_dir() { local d; d=$(env_get DATA_DIR); echo "${d:-./data}"; }
 
 main() {
   local cmd="${1:-help}"; shift || true
+  [[ -f .env ]] && blockbook_image_tag
   case "$cmd" in
     init)        cmd_init "$@" ;;
     build)       require_docker; require_env; blockbook_build_labels; "${COMPOSE[@]}" build "$@" ;;
@@ -172,6 +196,7 @@ main() {
     down)        require_docker; "${COMPOSE[@]}" down ;;
     restart)     require_docker; "${COMPOSE[@]}" restart "$@" ;;
     ps)          require_docker; "${COMPOSE[@]}" ps ;;
+    images)      require_docker; docker image ls 'rgbpp/*' ;;
     status)      require_docker; cmd_status ;;
     logs)        require_docker; cmd_logs "$@" ;;
     cli)         require_docker; "${COMPOSE[@]}" exec -T bitcoind btc-cli "$@" ;;

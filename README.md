@@ -201,6 +201,17 @@ scripts/btc.sh build
 Blockbook 镜像第一次构建需要编译 RocksDB，约 10~30 分钟；之后只换 Blockbook 版本时会复用该层。
 构建时脚本会打印实际使用的源码、版本和提交号，并写进二进制（`/api/` 返回的 `blockbook.version`、`gitCommit`）。
 
+镜像标签：
+
+- `rgbpp/bitcoind:<BITCOIN_VERSION>`，例如 `rgbpp/bitcoind:31.1`。
+- `rgbpp/blockbook:<源码版本>`，不用 `latest`：`BLOCKBOOK_SRC` 是 git 地址时取 `#` 后面的 ref（例如 `v0.6.0`），
+  是本地目录时取 `git describe`（例如 `v0.6.0-243-g9e6f079f-dirty`）。`build`、`up` 等命令都按同一规则算出标签，
+  所以运行的一定是对应版本的镜像；也可以在 `.env` 里设 `BLOCKBOOK_IMAGE_TAG` 手动指定。
+  `scripts/btc.sh images` 列出已构建的镜像。
+- 标签只取名字，不解析提交：`#master` 这样的分支名会一直是 `rgbpp/blockbook:master`，代码变了标签不变。
+  这也是生产环境要固定到 tag 或提交的原因之一。
+- 直接用 `docker compose` 而不经过脚本时，Blockbook 镜像标签会退回 `dev`。
+
 ### 5. 启动
 
 推荐先单独同步 bitcoind，追上链头后再启动 Blockbook——Blockbook 初始批量导入直接从 bitcoind 读块，
@@ -302,6 +313,8 @@ base_url = "http://<blockbook 主机>:19129"
 
 - **Blockbook**：把 `.env` 里 `BLOCKBOOK_SRC` 的 tag 改成新版本，然后
   `scripts/btc.sh build blockbook && scripts/btc.sh up`（不要重跑 `init`，它会重置 RPC 密码）。
+  旧版本镜像（例如 `rgbpp/blockbook:v0.6.0`）仍然保留，回滚时把 `BLOCKBOOK_SRC` 改回原来的 tag 再 `up`，不用重新构建
+  （前提是新版本没有改动索引格式）。确认不再需要后用 `docker image rm` 清理。
   先看上游 [releases](https://github.com/trezor/blockbook/releases) 的说明是否要求重建索引，
   以及新版本 `configs/coins/bitcoin*.json` 里的 Bitcoin Core 版本——两者一起升级。
 - **bitcoind**：在 `bitcoind/Dockerfile` 的校验表里加上新版本 x86_64 / aarch64 两个 sha256（取自对应

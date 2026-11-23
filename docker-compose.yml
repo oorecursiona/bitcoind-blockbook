@@ -45,7 +45,9 @@ services:
       options: { max-size: "50m", max-file: "5" }
 
   blockbook:
-    image: rgbpp/blockbook:${IMAGE_TAG:-latest}
+    # Tagged with the Blockbook source version (e.g. v0.6.0), set by scripts/btc.sh from
+    # BLOCKBOOK_SRC. Plain `docker compose` without the script falls back to `dev`.
+    image: rgbpp/blockbook:${BLOCKBOOK_IMAGE_TAG:-dev}
     build:
       context: ./blockbook
       # Blockbook source: a git URL (`repo.git#tag`, fetched by BuildKit) or a local
