@@ -154,7 +154,8 @@ sudo mkdir -p /data/btc-testnet4
 - `noatime`：读文件时不更新访问时间，减少 bitcoind / RocksDB 的无效写入。
 - `mount -a` 不报错，说明 fstab 这一行正确，重启后也能自动挂载。
 
-两种布局后续步骤相同：`DATA_DIR=/data/btc-testnet4`，容器启动时会自动修正目录所有者，无需手动 `chown`。
+两种布局后续步骤相同：`DATA_DIR=/data/btc-testnet4`。这个目录归 root 所有也没关系：里面的 `bitcoind/`、`blockbook/`
+子目录由 Docker 创建，容器启动时会自动修正所有者，无需手动 `chown`。
 
 需要 Docker Compose ≥ 2.17（用到 `build.additional_contexts`），`docker compose version` 确认。
 

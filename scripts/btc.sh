@@ -181,17 +181,25 @@ blockbook_image_tag() {
 
 data_dir() { local d; d=$(env_get DATA_DIR); echo "${d:-./data}"; }
 
+# Only DATA_DIR itself has to exist. The bitcoind/ and blockbook/ subdirectories are
+# created by the Docker daemon (as root) when the bind mount is set up, and each
+# entrypoint chowns its directory, so DATA_DIR may be root-owned (e.g. made with sudo).
+ensure_data_dir() {
+  local d; d=$(data_dir)
+  [[ -d "$d" ]] && return 0
+  mkdir -p "$d" 2>/dev/null \
+    || die "DATA_DIR $d does not exist and cannot be created; run: sudo mkdir -p $d"
+}
+
 main() {
   local cmd="${1:-help}"; shift || true
   [[ -f .env ]] && blockbook_image_tag
   case "$cmd" in
     init)        cmd_init "$@" ;;
     build)       require_docker; require_env; blockbook_build_labels; "${COMPOSE[@]}" build "$@" ;;
-    up)          require_docker; require_env
-                 mkdir -p "$(data_dir)/bitcoind" "$(data_dir)/blockbook"
+    up)          require_docker; require_env; ensure_data_dir
                  "${COMPOSE[@]}" up -d "$@" ;;
-    up-bitcoind) require_docker; require_env
-                 mkdir -p "$(data_dir)/bitcoind"
+    up-bitcoind) require_docker; require_env; ensure_data_dir
                  "${COMPOSE[@]}" up -d bitcoind ;;
     down)        require_docker; "${COMPOSE[@]}" down ;;
     restart)     require_docker; "${COMPOSE[@]}" restart "$@" ;;
